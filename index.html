@@ -1,0 +1,329 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fibonaci-Sweeper 10×10 (corners fixed + smart game over)</title>
+<style>
+  body { font-family: 'Segoe UI', sans-serif; background: #1a1a2e; color: #eee; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; margin: 0; }
+  h1 { font-weight: 300; margin: 0.2em 0; }
+  .info { font-size: 1rem; margin-bottom: 0.3em; }
+  table { border-collapse: collapse; background: #16213e; border-radius: 8px; overflow: hidden; box-shadow: 0 0 20px rgba(0,0,0,0.5); }
+  td { width: 38px; height: 38px; text-align: center; vertical-align: middle; font-weight: bold; font-size: 1.1rem; cursor: pointer; border: 1px solid #0f3460; user-select: none; transition: box-shadow 0.15s; }
+  td.hidden { background: #1a1a2e; }
+  td.hidden:hover { background: #2a2a4e; }
+  td.revealed { background: #0f3460; color: #e0e0e0; }
+  td.revealed.num0 { color: #555; }
+  td.revealed.num1 { color: #4fc3f7; }
+  td.revealed.num2 { color: #81c784; }
+  td.revealed.num3 { color: #ffb74d; }
+  td.revealed.num4 { color: #ba68c8; }
+  td.revealed.num5 { color: #f06292; }
+  td.revealed.num6 { color: #4dd0e1; }
+  td.revealed.num7 { color: #a1887f; }
+  td.revealed.num8 { color: #e57373; }
+
+  /* Mines */
+  td.mine-unflagged { background: #ffeb3b; }   /* yellow */
+  td.mine-unflagged::after { content: "💣"; }
+  td.mine-flagged { background: #4caf50; }     /* green */
+  td.mine-flagged::after { content: "💣🚩"; }
+  td.wrong-flag { background: #f44336; }       /* red */
+  td.wrong-flag::after { content: "❌"; }
+
+  td.flagged::after { content: "🚩"; font-size: 1.2rem; }
+
+  /* Highlight: glowing borders */
+  td.highlight { box-shadow: inset 0 0 0 3px #fbc02d; }
+  td.highlight-source { box-shadow: inset 0 0 0 3px #ff5722; }
+
+  button { background: #e94560; color: white; font-weight: bold; border: none; padding: 0.5em 1.2em; border-radius: 6px; font-size: 1rem; cursor: pointer; margin-top: 0.8em; }
+  button:hover { background: #ff6b81; }
+  .msg { margin-top: 0.3em; font-size: 1.1rem; min-height: 1.4em; }
+</style>
+</head>
+<body>
+<h1>🌀 Fibonaci‑Sweeper (fixed corners, smart G.O.)</h1>
+<div class="info">💣 15 mines &nbsp;|&nbsp; 🚩 flags: <span id="flagcount">0</span></div>
+<div class="msg" id="message">Click to reveal. 0 = auto‑reveal spiral.</div>
+<div id="board"></div>
+<button id="reset" onclick="initGame()">Reset Board</button>
+
+<script>
+const SIZE = 10;
+const TOTAL_MINES = 15;
+
+// Fibonacci spiral construction (8 cells ideal)
+const FIB_SEGMENTS = [1, 1, 2, 3, 5];
+const DIRECTIONS = [
+  [0,1], [1,1], [1,0], [1,-1], [0,-1], [-1,-1], [-1,0], [-1,1]
+];
+
+let board;
+let spiralCells;     // best available spiral per cell (up to 8 cells)
+let gameOver = false;
+let highlightedCell = null;
+
+// Build the longest possible Fibonacci spiral that stays in bounds.
+function generateSpiral(r, c) {
+  let best = [];
+
+  for (let startDir = 0; startDir < 8; startDir++) {
+    for (let clockwise of [true, false]) {
+      const cells = walkSpiralMax(r, c, startDir, clockwise);
+      if (cells.length > best.length) best = cells;
+      if (best.length === 8) return best; // optimal found
+    }
+  }
+  return best; // best we could do (may be < 8 at corners)
+}
+
+function walkSpiralMax(r, c, startDir, clockwise) {
+  let collected = [];
+  let visited = new Set([`${r},${c}`]);
+  let cr = r, cc = c;
+  let dir = startDir;
+
+  for (let seg = 0; seg < FIB_SEGMENTS.length && collected.length < 8; seg++) {
+    const steps = FIB_SEGMENTS[seg];
+    const [dr, dc] = DIRECTIONS[dir];
+    for (let s = 0; s < steps && collected.length < 8; s++) {
+      cr += dr;
+      cc += dc;
+      if (cr < 0 || cr >= SIZE || cc < 0 || cc >= SIZE) continue; // skip out-of-bounds, continue walking
+      const key = `${cr},${cc}`;
+      if (!visited.has(key)) {
+        visited.add(key);
+        collected.push([cr, cc]);
+      }
+    }
+    dir = clockwise ? (dir + 1) % 8 : (dir + 7) % 8;
+  }
+  return collected;
+}
+
+function precomputeSpirals() {
+  spiralCells = Array(SIZE).fill().map(() => Array(SIZE).fill([]));
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++)
+      spiralCells[r][c] = generateSpiral(r, c);
+}
+
+// Place mines and compute numbers
+function placeMines() {
+  let cells = [];
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++)
+      cells.push([r, c]);
+  for (let i = cells.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [cells[i], cells[j]] = [cells[j], cells[i]];
+  }
+  const mines = cells.slice(0, TOTAL_MINES);
+  board = Array(SIZE).fill().map(() => Array(SIZE).fill().map(() => ({ mine: false, revealed: false, flagged: false, number: 0 })));
+  for (let [r, c] of mines) board[r][c].mine = true;
+
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      if (board[r][c].mine) {
+        board[r][c].number = -1;
+      } else {
+        let count = 0;
+        for (let [nr, nc] of spiralCells[r][c]) {
+          if (board[nr][nc].mine) count++;
+        }
+        board[r][c].number = count;
+      }
+    }
+  }
+}
+
+// Flood fill from a 0 cell
+function reveal(r, c) {
+  if (gameOver || board[r][c].revealed || board[r][c].flagged) return;
+  if (board[r][c].mine) {
+    board[r][c].revealed = true;
+    gameOver = true;
+    revealAllMines();
+    clearHighlight();
+    render();
+    document.getElementById('message').textContent = '💥 BOOM! You hit a mine.';
+    return;
+  }
+
+  let queue = [[r, c]];
+  let visited = new Set();
+
+  while (queue.length > 0) {
+    const [cr, cc] = queue.shift();
+    if (visited.has(`${cr},${cc}`)) continue;
+    if (board[cr][cc].revealed || board[cr][cc].flagged) continue;
+    if (board[cr][cc].mine) continue;
+
+    board[cr][cc].revealed = true;
+    visited.add(`${cr},${cc}`);
+
+    if (board[cr][cc].number === 0) {
+      for (let [nr, nc] of spiralCells[cr][cc]) {
+        if (!board[nr][nc].revealed && !board[nr][nc].flagged) {
+          queue.push([nr, nc]);
+        }
+      }
+    }
+  }
+
+  clearHighlight();
+  render();
+
+  if (checkWin()) {
+    gameOver = true;
+    for (let r = 0; r < SIZE; r++)
+      for (let c = 0; c < SIZE; c++)
+        if (board[r][c].mine && !board[r][c].flagged) board[r][c].flagged = true;
+    render();
+    document.getElementById('message').textContent = '🏆 You win!';
+  }
+}
+
+function revealAllMines() {
+  for (let r = 0; r < SIZE; r++) {
+    for (let c = 0; c < SIZE; c++) {
+      if (board[r][c].mine) {
+        board[r][c].revealed = true;
+      } else if (board[r][c].flagged) {
+        // wrong flag: keep it revealed so we can color it red
+        board[r][c].revealed = true;
+      }
+    }
+  }
+}
+
+function toggleFlag(r, c) {
+  if (gameOver || board[r][c].revealed) return;
+  board[r][c].flagged = !board[r][c].flagged;
+  clearHighlight();
+  render();
+  updateFlagCount();
+}
+
+function checkWin() {
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++)
+      if (!board[r][c].mine && !board[r][c].revealed) return false;
+  return true;
+}
+
+function updateFlagCount() {
+  let cnt = 0;
+  for (let r = 0; r < SIZE; r++)
+    for (let c = 0; c < SIZE; c++)
+      if (board[r][c].flagged) cnt++;
+  document.getElementById('flagcount').textContent = cnt;
+}
+
+// Highlighting (border only)
+function setHighlight(r, c) {
+  clearHighlightDOM();
+  highlightedCell = [r, c];
+  for (let [nr, nc] of spiralCells[r][c]) {
+    const td = document.querySelector(`td[data-row='${nr}'][data-col='${nc}']`);
+    if (td) td.classList.add('highlight');
+  }
+  const src = document.querySelector(`td[data-row='${r}'][data-col='${c}']`);
+  if (src) src.classList.add('highlight-source');
+}
+
+function clearHighlight() {
+  clearHighlightDOM();
+  highlightedCell = null;
+}
+
+function clearHighlightDOM() {
+  document.querySelectorAll('td.highlight, td.highlight-source').forEach(td => td.classList.remove('highlight', 'highlight-source'));
+}
+
+function onRevealedNumberClick(r, c) {
+  if (board[r][c].mine) return;
+  if (highlightedCell && highlightedCell[0] === r && highlightedCell[1] === c) {
+    clearHighlight();
+  } else {
+    setHighlight(r, c);
+  }
+}
+
+// Rendering with smart game-over colors
+function render() {
+  const container = document.getElementById('board');
+  container.innerHTML = '';
+  const table = document.createElement('table');
+  for (let r = 0; r < SIZE; r++) {
+    const tr = document.createElement('tr');
+    for (let c = 0; c < SIZE; c++) {
+      const td = document.createElement('td');
+      td.dataset.row = r;
+      td.dataset.col = c;
+      const cell = board[r][c];
+
+      if (cell.revealed) {
+        td.classList.add('revealed');
+        if (cell.mine) {
+          // Game-over mine coloring
+          if (cell.flagged) {
+            td.classList.add('mine-flagged');
+          } else {
+            td.classList.add('mine-unflagged');
+          }
+        } else if (cell.flagged) {
+          // safe cell that was wrongly flagged
+          td.classList.add('wrong-flag');
+        } else {
+          // normal safe number
+          td.classList.add('num' + cell.number);
+          if (cell.number > 0) td.textContent = cell.number;
+        }
+      } else {
+        td.classList.add('hidden');
+        if (cell.flagged) td.classList.add('flagged');
+      }
+
+      td.addEventListener('click', (e) => {
+        e.preventDefault();
+        if (gameOver) return;
+        const row = +td.dataset.row, col = +td.dataset.col;
+        if (!board[row][col].revealed) {
+          reveal(row, col);
+        } else if (!board[row][col].mine) {
+          onRevealedNumberClick(row, col);
+        }
+      });
+
+      td.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        if (gameOver) return;
+        const row = +td.dataset.row, col = +td.dataset.col;
+        if (!board[row][col].revealed) toggleFlag(row, col);
+      });
+
+      tr.appendChild(td);
+    }
+    table.appendChild(tr);
+  }
+  container.appendChild(table);
+  updateFlagCount();
+  if (highlightedCell) setHighlight(highlightedCell[0], highlightedCell[1]);
+}
+
+function initGame() {
+  precomputeSpirals();
+  placeMines();
+  gameOver = false;
+  highlightedCell = null;
+  document.getElementById('message').textContent = 'Click to reveal. 0 = auto‑reveal spiral.';
+  updateFlagCount();
+  render();
+}
+
+initGame();
+</script>
+</body>
+</html>
